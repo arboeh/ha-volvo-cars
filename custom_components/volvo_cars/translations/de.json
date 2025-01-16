@@ -1,10 +1,4 @@
 {
-    "//translator": {
-        "//firstname": "arend",
-        "//lastname": "boehmer",
-        "//mail": "arend.boehmer@web.de",
-        "//country": "germany"
-    },
     "config": {
         "step": {
             "user": {
