@@ -17,6 +17,7 @@ from homeassistant.const import (
     UnitOfVolume,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -64,14 +65,6 @@ def _calculate_time_to_service(field: VolvoCarsValue, _: VolvoCarsConfigEntry) -
     return value
 
 
-def _calculate_engine_time_to_service(
-    field: VolvoCarsValue, _: VolvoCarsConfigEntry
-) -> int:
-    # Express value in days instead of hours
-    value = int(field.value)
-    return round(value / 24)
-
-
 def _determine_fuel_consumption_unit(entry: VolvoCarsConfigEntry) -> str:
     unit_key = entry.options.get(OPT_FUEL_CONSUMPTION_UNIT, OPT_UNIT_LITER_PER_100KM)
 
@@ -87,17 +80,16 @@ def _convert_fuel_consumption(
     value = Decimal(field.value)
     unit_key = entry.options.get(OPT_FUEL_CONSUMPTION_UNIT, OPT_UNIT_LITER_PER_100KM)
 
+    decimals = 1
+    converted_value = value
+
     if unit_key == OPT_UNIT_MPG_UK:
         decimals = 2
-        converted_value = (Decimal(282.481) / value) if value else 0
+        converted_value = (Decimal(282.481) / value) if value else Decimal(0)
 
     elif unit_key == OPT_UNIT_MPG_US:
         decimals = 2
-        converted_value = (Decimal(235.215) / value) if value else 0
-
-    else:
-        decimals = 1
-        converted_value = value
+        converted_value = (Decimal(235.215) / value) if value else Decimal(0)
 
     return round(converted_value, decimals)
 
@@ -110,12 +102,14 @@ SENSORS: tuple[VolvoCarsSensorDescription, ...] = (
         api_field=DATA_REQUEST_COUNT,
         state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:counter",
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     VolvoCarsSensorDescription(
         key="api_status",
         translation_key="api_status",
         api_field="apiStatus",
         icon="mdi:api",
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     VolvoCarsSensorDescription(
         key="availability",
@@ -205,6 +199,7 @@ SENSORS: tuple[VolvoCarsSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         available_fn=lambda vehicle: vehicle.has_battery_engine(),
         icon="mdi:car-battery",
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     VolvoCarsSensorDescription(
         key="battery_charge_level",
@@ -279,8 +274,7 @@ SENSORS: tuple[VolvoCarsSensorDescription, ...] = (
         key="engine_time_to_service",
         translation_key="engine_time_to_service",
         api_field="engineHoursToService",
-        native_unit_of_measurement=UnitOfTime.DAYS,
-        value_fn=_calculate_engine_time_to_service,
+        native_unit_of_measurement=UnitOfTime.HOURS,
         icon="mdi:wrench-clock",
     ),
     VolvoCarsSensorDescription(

@@ -1,5 +1,7 @@
 """Test fixtures for Volvo Cars."""
 
+from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from _pytest.fixtures import SubRequest
@@ -8,7 +10,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.volvo_cars.const import CONF_VCC_API_KEY, CONF_VIN, DOMAIN
 from custom_components.volvo_cars.coordinator import VolvoCarsData
-from custom_components.volvo_cars.store import StoreData, create_store
+from custom_components.volvo_cars.store import VolvoCarsStoreManager
 from custom_components.volvo_cars.volvo.auth import VolvoCarsAuthApi
 from custom_components.volvo_cars.volvo.models import (
     AuthorizationModel,
@@ -39,25 +41,17 @@ async def mock_config_entry(hass: HomeAssistant) -> MockConfigEntry:
         },
     )
 
-    store = create_store(hass, config_entry.unique_id)
-    await store.async_save(
-        StoreData(
-            access_token="",
-            refresh_token="",
-            data_update_interval=135,
-            engine_run_time=15,
-            api_request_count=0,
-        )
-    )
+    store = VolvoCarsStoreManager(hass, config_entry.unique_id)
+    await store.async_update()
 
-    config_entry.runtime_data = VolvoCarsData(MagicMock(), store)
+    config_entry.runtime_data = VolvoCarsData(MagicMock(), MagicMock(), store)
     config_entry.add_to_hass(hass)
 
     return config_entry
 
 
 @pytest.fixture(autouse=True)
-async def mock_api(request: SubRequest):
+async def mock_api(request: SubRequest) -> AsyncGenerator[None, None]:
     """Mock APIs."""
 
     marker = request.node.get_closest_marker("use_model")
@@ -70,28 +64,28 @@ async def mock_api(request: SubRequest):
             autospec=True,
         ) as mock_api,
     ):
-        vehicle_data = load_json_object_fixture(f"vehicle_{model}.json")
+        vehicle_data = load_json_object_fixture("vehicle", model)
         vehicle = VolvoCarsVehicle.from_dict(vehicle_data)
 
-        commands_data = load_json_object_fixture("commands.json").get("data")
-        commands = [VolvoCarsAvailableCommand.from_dict(item) for item in commands_data]
+        commands_data = load_json_object_fixture("commands", model).get("data")
+        commands = [VolvoCarsAvailableCommand.from_dict(item) for item in commands_data]  # type: ignore[arg-type, union-attr]
 
-        location_data = load_json_object_fixture("location.json")
+        location_data = load_json_object_fixture("location", model)
         location = {"location": VolvoCarsLocation.from_dict(location_data)}
 
-        availability = _get_json_as_value_field("availability.json")
-        brakes = _get_json_as_value_field("brakes.json")
-        diagnostics = _get_json_as_value_field("diagnostics.json")
-        doors = _get_json_as_value_field("doors.json")
-        engine_status = _get_json_as_value_field("engine_status.json")
-        engine_warnings = _get_json_as_value_field("engine_warnings.json")
-        fuel_status = _get_json_as_value_field("fuel_status.json")
-        odometer = _get_json_as_value_field("odometer.json")
-        recharge_status = _get_json_as_value_field("recharge_status.json")
-        statistics = _get_json_as_value_field("statistics.json")
-        tyres = _get_json_as_value_field("tyres.json")
-        warnings = _get_json_as_value_field("warnings.json")
-        windows = _get_json_as_value_field("windows.json")
+        availability = _get_json_as_value_field("availability", model)
+        brakes = _get_json_as_value_field("brakes", model)
+        diagnostics = _get_json_as_value_field("diagnostics", model)
+        doors = _get_json_as_value_field("doors", model)
+        engine_status = _get_json_as_value_field("engine_status", model)
+        engine_warnings = _get_json_as_value_field("engine_warnings", model)
+        fuel_status = _get_json_as_value_field("fuel_status", model)
+        odometer = _get_json_as_value_field("odometer", model)
+        recharge_status = _get_json_as_value_field("recharge_status", model)
+        statistics = _get_json_as_value_field("statistics", model)
+        tyres = _get_json_as_value_field("tyres", model)
+        warnings = _get_json_as_value_field("warnings", model)
+        windows = _get_json_as_value_field("windows", model)
 
         api = mock_api.return_value
         api.async_get_api_status = AsyncMock(
@@ -129,19 +123,19 @@ async def mock_api(request: SubRequest):
 
 
 @pytest.fixture
-async def mock_image_client():
+async def mock_image_client() -> AsyncGenerator[None, None]:
     """Mock the http client used by the image platform."""
     mock_response = AsyncMock()
     mock_response.raise_for_status = lambda: None
     mock_response.status_code = 200
 
-    async def mock_get(*args, **kwargs):
+    async def mock_get(*args: tuple[Any, ...], **kwargs: dict[str, Any]) -> AsyncMock:
         return mock_response
 
     with patch("httpx.AsyncClient.get", new=mock_get):
         yield
 
 
-def _get_json_as_value_field(filename: str) -> dict:
-    data = load_json_object_fixture(filename)
-    return {key: VolvoCarsValueField.from_dict(value) for key, value in data.items()}
+def _get_json_as_value_field(name: str, model: str) -> dict:
+    data = load_json_object_fixture(name, model)
+    return {key: VolvoCarsValueField.from_dict(value) for key, value in data.items()}  # type: ignore[arg-type]

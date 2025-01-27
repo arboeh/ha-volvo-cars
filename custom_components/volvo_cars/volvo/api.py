@@ -3,9 +3,18 @@
 import logging
 from typing import Any, cast
 
-from aiohttp import ClientResponseError, ClientSession, hdrs
+from aiohttp import (
+    ClientError,
+    ClientResponseError,
+    ClientSession,
+    ClientTimeout,
+    RequestInfo,
+    hdrs,
+)
+from yarl import URL
 
 from .models import (
+    TokenResponse,
     VolvoApiException,
     VolvoAuthException,
     VolvoCarsAvailableCommand,
@@ -22,8 +31,8 @@ _API_ENERGY_ENDPOINT = "/energy/v1/vehicles"
 _API_LOCATION_ENDPOINT = "/location/v1/vehicles"
 _API_URL = "https://api.volvocars.com"
 _API_STATUS_URL = "https://public-developer-portal-bff.weu-prod.ecpaz.volvocars.biz/api/v1/backend-status"
+_API_REQUEST_TIMEOUT = ClientTimeout(total=30)
 
-_LOGGER = logging.getLogger(__name__)
 _DATA_TO_REDACT = [
     "coordinates",
     "heading",
@@ -31,28 +40,29 @@ _DATA_TO_REDACT = [
     "vin",
 ]
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class VolvoCarsApi:
     """Volvo Cars API."""
 
-    def __init__(
-        self, client: ClientSession, vin: str, api_key: str, access_token: str
-    ) -> None:
+    def __init__(self, client: ClientSession, vin: str, api_key: str) -> None:
         """Initialize Volvo Cars API."""
         self._client = client
         self._vin = vin
         self._api_key = api_key
-        self._access_token = access_token
 
-    def update_access_token(self, access_token: str) -> None:
+    def update_access_token(self, token: TokenResponse) -> None:
         """Update the access token."""
-        self._access_token = access_token
+        self._access_token = token.access_token
 
     async def async_get_api_status(self) -> dict[str, VolvoCarsValue]:
         """Check the API status."""
         try:
             _LOGGER.debug("Request [API status]")
-            async with self._client.get(_API_STATUS_URL) as response:
+            async with self._client.get(
+                _API_STATUS_URL, timeout=_API_REQUEST_TIMEOUT
+            ) as response:
                 _LOGGER.debug("Request [API status] status: %s", response.status)
                 response.raise_for_status()
                 json = await response.json()
@@ -61,8 +71,8 @@ class VolvoCarsApi:
 
                 message = data.get("message") or "OK"
 
-        except ClientResponseError as ex:
-            _LOGGER.debug("Request [API status] error: %s", ex.message)
+        except (ClientError, TimeoutError) as ex:
+            _LOGGER.debug("Request [API status] error: %s", ex)
             message = "Unknown"
 
         return {"apiStatus": VolvoCarsValue(message)}
@@ -206,7 +216,7 @@ class VolvoCarsApi:
                 redact_url(url, self._vin),
             )
             async with self._client.request(
-                method, url, headers=headers, json=body
+                method, url, headers=headers, json=body, timeout=_API_REQUEST_TIMEOUT
             ) as response:
                 _LOGGER.debug("Request [%s] status: %s", operation, response.status)
                 json = await response.json()
@@ -224,9 +234,6 @@ class VolvoCarsApi:
 
             _LOGGER.debug("Request [%s] error: %s", operation, ex.message)
 
-            if ex.status in (401, 403):
-                raise VolvoAuthException from ex
-
             if ex.status == 422 and "commands" in operation:
                 return {
                     "data": {
@@ -236,4 +243,41 @@ class VolvoCarsApi:
                     }
                 }
 
-            raise VolvoApiException from ex
+            redacted_exception = RedactedClientResponseError(ex, self._vin)
+
+            if ex.status in (401, 403):
+                raise VolvoAuthException(ex.message) from redacted_exception
+
+            raise VolvoApiException(ex.message) from redacted_exception
+
+        except (ClientError, TimeoutError) as ex:
+            _LOGGER.debug("Request [%s] error: %s", operation, ex.__class__.__name__)
+            raise VolvoApiException(ex.__class__.__name__) from ex
+
+
+class RedactedClientResponseError(ClientResponseError):
+    """Exception class that redacts sensitive data."""
+
+    def __init__(self, exception: ClientResponseError, vin: str) -> None:
+        """Initialize class."""
+
+        redacted_url = self._redact_url(exception.request_info.url, vin)
+        redacted_real_url = self._redact_url(exception.request_info.real_url, vin)
+        redacted_request_info = RequestInfo(
+            redacted_url,
+            exception.request_info.method,
+            exception.request_info.headers,
+            redacted_real_url,
+        )
+
+        super().__init__(
+            redacted_request_info,
+            exception.history,
+            status=exception.status,
+            message=exception.message,
+            headers=exception.headers,
+        )
+
+    def _redact_url(self, url: URL, vin: str) -> URL:
+        redacted_url = redact_url(str(url), vin)
+        return URL(redacted_url)

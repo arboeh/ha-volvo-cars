@@ -9,6 +9,7 @@ from homeassistant.components.button import ButtonEntity, ButtonEntityDescriptio
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import ATTR_API_TIMESTAMP, ATTR_LAST_RESULT
@@ -96,6 +97,7 @@ BUTTONS: tuple[VolvoCarsButtonDescription, ...] = (
         translation_key="update_data",
         icon="mdi:cloud-refresh-outline",
         non_api_command=True,
+        entity_category=EntityCategory.CONFIG,
     ),
 )
 
@@ -108,14 +110,14 @@ async def async_setup_entry(
     """Set up button."""
     coordinator = entry.runtime_data.coordinator
 
-    locks = [
+    buttons = [
         VolvoCarsButton(coordinator, description)
         for description in BUTTONS
         if description.non_api_command
         or description.required_command_key in coordinator.commands
     ]
 
-    async_add_entities(locks)
+    async_add_entities(buttons)
 
 
 # pylint: disable=abstract-method

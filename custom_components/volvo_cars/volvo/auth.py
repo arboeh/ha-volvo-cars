@@ -1,9 +1,10 @@
 """Volvo Auth API."""
 
+from collections.abc import Callable
 import logging
 from typing import Any, cast
 
-from aiohttp import ClientSession
+from aiohttp import ClientError, ClientSession, ClientTimeout, hdrs
 
 from .data import DataCache
 from .models import AuthorizationModel, TokenResponse, VolvoAuthException
@@ -41,8 +42,8 @@ _SCOPE = [
     "energy:estimated_charging_time",
     "energy:recharge_status",
 ]
+_API_REQUEST_TIMEOUT = ClientTimeout(total=30)
 
-_LOGGER = logging.getLogger(__name__)
 _DATA_TO_REDACT = [
     "access_token",
     "code",
@@ -54,71 +55,71 @@ _DATA_TO_REDACT = [
     "username",
 ]
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class VolvoCarsAuthApi:
     """Volvo Cars Authentication API."""
 
-    def __init__(self, client: ClientSession) -> None:
+    def __init__(
+        self,
+        client: ClientSession,
+        on_token_refresh: Callable[[TokenResponse], None] | None = None,
+    ) -> None:
         """Initialize Volvo Cars Authentication API."""
         self._client = client
+        self._on_token_refresh = on_token_refresh
 
     async def async_authenticate(
         self, username: str, password: str
     ) -> AuthorizationModel:
         """Request OTP to authenticate user."""
+        data = await self._async_auth_init()
+        status = data.get("status")
 
-        try:
-            data = await self._async_auth_init()
+        if status == "USERNAME_PASSWORD_REQUIRED":
+            url = data["_links"]["checkUsernamePassword"]["href"]
+
+            data = await self._async_username_pass(url, username, password)
             status = data.get("status")
 
-            if status == "USERNAME_PASSWORD_REQUIRED":
-                url = data["_links"]["checkUsernamePassword"]["href"]
+        if status == "OTP_REQUIRED":
+            url = data["_links"]["checkOtp"]["href"] + "?action=checkOtp"
+            return AuthorizationModel(status, next_url=url)
 
-                data = await self._async_username_pass(url, username, password)
-                status = data.get("status")
+        if status == "COMPLETED":
+            return await self._handle_status_completed(data, status)
 
-            if status == "OTP_REQUIRED":
-                url = data["_links"]["checkOtp"]["href"] + "?action=checkOtp"
-                return AuthorizationModel(status, next_url=url)
-
-            if status == "COMPLETED":
-                return await self._handle_status_completed(data, status)
-        except Exception as ex:
-            raise VolvoAuthException from ex
-
-        raise VolvoAuthException(f"Unhandled status: {status}")
+        raise self._create_exception(data)
 
     async def async_request_token(self, url: str, otp: str) -> AuthorizationModel:
         """Request token."""
+        data = await self._async_send_otp(url, otp)
+        status = data.get("status")
 
-        try:
-            data = await self._async_send_otp(url, otp)
+        if status == "OTP_VERIFIED":
+            url = (
+                data["_links"]["continueAuthentication"]["href"]
+                + "?action=continueAuthentication"
+            )
+
+            data = await self._async_continue_auth(url)
             status = data.get("status")
 
-            if status == "OTP_VERIFIED":
-                url = (
-                    data["_links"]["continueAuthentication"]["href"]
-                    + "?action=continueAuthentication"
-                )
+            if status == "COMPLETED":
+                return await self._handle_status_completed(data, status)
 
-                data = await self._async_continue_auth(url)
-                status = data.get("status")
-
-                if status == "COMPLETED":
-                    return await self._handle_status_completed(data, status)
-        except Exception as ex:
-            raise VolvoAuthException from ex
-
-        raise VolvoAuthException(f"Unhandled status: {status}")
+        raise self._create_exception(data)
 
     async def async_refresh_token(self, refresh_token: str) -> AuthorizationModel:
         """Refresh token."""
 
-        try:
-            auth = await self._async_refresh_token(refresh_token)
-            return AuthorizationModel("COMPLETED", token=auth)
-        except Exception as ex:
-            raise VolvoAuthException from ex
+        auth = await self._async_refresh_token(refresh_token)
+
+        if auth and self._on_token_refresh:
+            self._on_token_refresh(auth)
+
+        return AuthorizationModel("COMPLETED", token=auth)
 
     async def _async_auth_init(self) -> dict[str, Any]:
         helper_data = await DataCache.async_get_data(self._client)
@@ -135,20 +136,13 @@ class VolvoCarsAuthApi:
             "scope": " ".join(_SCOPE),
         }
 
-        _LOGGER.debug("Request [auth init]")
-        async with self._client.post(
+        return await self._async_request(
+            hdrs.METH_POST,
             _AUTH_URL,
             headers=headers,
             data=payload,
-        ) as response:
-            _LOGGER.debug("Request [auth init] status: %s", response.status)
-            json = await response.json()
-            data = cast(dict[str, Any], json)
-            _LOGGER.debug(
-                "Request [auth init] body: %s", redact_data(data, _DATA_TO_REDACT)
-            )
-            response.raise_for_status()
-            return data
+            name="auth init",
+        )
 
     async def _async_username_pass(
         self, url: str, username: str, password: str
@@ -157,76 +151,64 @@ class VolvoCarsAuthApi:
         params = {"action": "checkUsernamePassword"}
         payload = {"username": username, "password": password}
 
-        _LOGGER.debug("Request [credentials]")
-        async with self._client.post(
-            url, headers=headers, params=params, json=payload
-        ) as response:
-            _LOGGER.debug("Request [credentials] status: %s", response.status)
-            json = await response.json()
-            data = cast(dict[str, Any], json)
-            _LOGGER.debug(
-                "Request [credentials] body: %s", redact_data(data, _DATA_TO_REDACT)
-            )
-            response.raise_for_status()
-            return data
+        return await self._async_request(
+            hdrs.METH_POST,
+            url,
+            headers=headers,
+            params=params,
+            json=payload,
+            name="credentials",
+        )
 
     async def _async_send_otp(self, url: str, otp: str) -> dict[str, Any]:
         headers = await self._async_get_default_headers()
         payload = {"otp": otp}
 
-        _LOGGER.debug("Request [OTP]")
-        async with self._client.post(url, headers=headers, json=payload) as response:
-            _LOGGER.debug("Request [OTP] status: %s", response.status)
-            json = await response.json()
-            data = cast(dict[str, Any], json)
-            _LOGGER.debug("Request [OTP] body: %s", redact_data(data, _DATA_TO_REDACT))
-            response.raise_for_status()
-            return data
+        return await self._async_request(
+            hdrs.METH_POST,
+            url,
+            headers=headers,
+            json=payload,
+            name="OTP",
+        )
 
     async def _async_continue_auth(self, url: str) -> dict[str, Any]:
-        _LOGGER.debug("Request [auth cont]")
         headers = await self._async_get_default_headers()
-        async with self._client.get(url, headers=headers) as response:
-            _LOGGER.debug("Request [auth cont] status: %s", response.status)
-            json = await response.json()
-            data = cast(dict[str, Any], json)
-            _LOGGER.debug(
-                "Request [auth cont] body: %s", redact_data(data, _DATA_TO_REDACT)
-            )
-            response.raise_for_status()
-            return data
+
+        return await self._async_request(
+            hdrs.METH_GET,
+            url,
+            headers=headers,
+            name="auth cont",
+        )
 
     async def _async_request_token(self, code: str) -> TokenResponse | None:
         headers = await self._async_get_all_headers()
         payload = {"code": code, "grant_type": "authorization_code"}
 
-        _LOGGER.debug("Request [tokens]")
-        async with self._client.post(
-            _TOKEN_URL, headers=headers, data=payload
-        ) as response:
-            _LOGGER.debug("Request [tokens] status: %s", response.status)
-            json = await response.json()
-            _LOGGER.debug(
-                "Request [tokens] body: %s", redact_data(json, _DATA_TO_REDACT)
-            )
-            response.raise_for_status()
-            return TokenResponse.from_dict(json)
+        data = await self._async_request(
+            hdrs.METH_POST,
+            _TOKEN_URL,
+            headers=headers,
+            data=payload,
+            name="tokens",
+        )
+
+        return TokenResponse.from_dict(data)
 
     async def _async_refresh_token(self, refresh_token: str) -> TokenResponse | None:
         headers = await self._async_get_all_headers()
         payload = {"refresh_token": refresh_token, "grant_type": "refresh_token"}
 
-        _LOGGER.debug("Request [token refresh]")
-        async with self._client.post(
-            _TOKEN_URL, headers=headers, data=payload
-        ) as response:
-            _LOGGER.debug("Request [token refresh] status: %s", response.status)
-            json = await response.json()
-            _LOGGER.debug(
-                "Request [token refresh] body: %s", redact_data(json, _DATA_TO_REDACT)
-            )
-            response.raise_for_status()
-            return TokenResponse.from_dict(json)
+        data = await self._async_request(
+            hdrs.METH_POST,
+            _TOKEN_URL,
+            headers=headers,
+            data=payload,
+            name="token refresh",
+        )
+
+        return TokenResponse.from_dict(data)
 
     async def _handle_status_completed(
         self, data: dict, status: str
@@ -249,3 +231,49 @@ class VolvoCarsAuthApi:
             p["key"]: p["value"],
             a["key"]: a["value"],
         }
+
+    async def _async_request(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        data: dict[str, str] | None = None,
+        json: dict[str, Any] | None = None,
+        name: str = "",
+    ) -> dict[str, Any]:
+        _LOGGER.debug("Request [%s]", name)
+
+        try:
+            async with self._client.request(
+                method,
+                url,
+                params=params,
+                headers=headers,
+                data=data,
+                json=json,
+                timeout=_API_REQUEST_TIMEOUT,
+            ) as response:
+                _LOGGER.debug("Request [%s] status: %s", name, response.status)
+
+                json = await response.json()
+                data = cast(dict[str, Any], json)
+
+                _LOGGER.debug(
+                    "Request [%s] response: %s",
+                    name,
+                    redact_data(data, _DATA_TO_REDACT),
+                )
+
+                response.raise_for_status()
+                return data
+
+        except (ClientError, TimeoutError) as ex:
+            _LOGGER.debug("Request [%s] error: %s", name, ex)
+            raise VolvoAuthException(ex.__class__.__name__) from ex
+
+    def _create_exception(self, data: dict[str, Any]) -> VolvoAuthException:
+        return VolvoAuthException(
+            f"Status: {data.get("status")} Reason: {data.get("message")}"
+        )

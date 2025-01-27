@@ -11,11 +11,11 @@ from homeassistant.core import HomeAssistant
 
 async def test_has_images(
     hass: HomeAssistant,
-    enable_custom_integrations,
+    enable_custom_integrations: None,
     mock_config_entry: MockConfigEntry,
-    mock_image_client,
+    mock_image_client: None,
 ) -> None:
-    """Test vehicle without images."""
+    """Test vehicle with images."""
 
     with patch("custom_components.volvo_cars.PLATFORMS", [Platform.IMAGE]):
         assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
@@ -30,9 +30,9 @@ async def test_has_images(
 @pytest.mark.use_model("s90_diesel")
 async def test_no_images(
     hass: HomeAssistant,
-    enable_custom_integrations,
+    enable_custom_integrations: None,
     mock_config_entry: MockConfigEntry,
-    mock_image_client,
+    mock_image_client: None,
 ) -> None:
     """Test vehicle without images."""
 

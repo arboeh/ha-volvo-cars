@@ -17,13 +17,12 @@ def test_create_value_field(has_timestamp: bool) -> None:
     """Test deserialization of VolvoCarsValueField."""
 
     data = (
-        load_json_object_fixture("engine_status.json")
+        load_json_object_fixture("engine_status")
         if has_timestamp
-        else load_json_object_fixture("engine_status_no_timestamp.json")
+        else load_json_object_fixture("engine_status_no_timestamp")
     )
 
-    field = VolvoCarsValueField.from_dict(data["engineStatus"])
-
+    field = VolvoCarsValueField.from_dict(data["engineStatus"])  # type: ignore[arg-type]
     assert field
     assert field.value == "STOPPED"
 
@@ -39,9 +38,9 @@ def test_create_location(has_timestamp: bool) -> None:
     """Test deserialization of VolvoCarsLocation."""
 
     data = (
-        load_json_object_fixture("location.json")
+        load_json_object_fixture("location")
         if has_timestamp
-        else load_json_object_fixture("location_no_timestamp.json")
+        else load_json_object_fixture("location_no_timestamp")
     )
 
     location = VolvoCarsLocation.from_dict(data)

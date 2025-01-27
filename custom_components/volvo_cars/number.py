@@ -8,13 +8,13 @@ import logging
 from homeassistant.components.number import NumberEntity, NumberEntityDescription
 from homeassistant.const import Platform, UnitOfTime
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import VolvoCarsConfigEntry, VolvoCarsDataCoordinator
 from .entity import VolvoCarsEntity
 from .entity_description import VolvoCarsDescription
 from .store import StoreData
-from .volvo.models import VolvoCarsVehicle
 
 PARALLEL_UPDATES = 0
 _LOGGER = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class VolvoCarsNumberDescription(VolvoCarsDescription, NumberEntityDescription):
     api_field: str = ""
     get_value_fn: Callable[[StoreData], float]
     set_value_fn: Callable[[VolvoCarsDataCoordinator, float], Awaitable[None]]
-    available_fn: Callable[[VolvoCarsVehicle], bool] = lambda vehicle: True
+    available_fn: Callable[[VolvoCarsDataCoordinator], bool] = lambda coordinator: True
 
 
 def _get_update_interval(data: StoreData) -> float:
@@ -53,6 +53,13 @@ async def _set_engine_run_time(
     await coordinator.store.async_update(engine_run_time=value)
 
 
+def _engine_run_time_available(coordinator: VolvoCarsDataCoordinator) -> bool:
+    return (
+        coordinator.vehicle.has_combustion_engine()
+        and "ENGINE_START" in coordinator.commands
+    )
+
+
 NUMBERS: tuple[VolvoCarsNumberDescription, ...] = (
     VolvoCarsNumberDescription(
         key="data_update_interval",
@@ -64,6 +71,7 @@ NUMBERS: tuple[VolvoCarsNumberDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.SECONDS,
         get_value_fn=_get_update_interval,
         set_value_fn=_set_update_interval,
+        entity_category=EntityCategory.CONFIG,
     ),
     VolvoCarsNumberDescription(
         key="engine_run_time",
@@ -75,7 +83,8 @@ NUMBERS: tuple[VolvoCarsNumberDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.MINUTES,
         get_value_fn=_get_engine_run_time,
         set_value_fn=_set_engine_run_time,
-        available_fn=lambda vehicle: vehicle.has_combustion_engine(),
+        available_fn=_engine_run_time_available,
+        entity_category=EntityCategory.CONFIG,
     ),
 )
 
@@ -91,7 +100,7 @@ async def async_setup_entry(
     numbers = [
         VolvoCarsNumber(coordinator, description)
         for description in NUMBERS
-        if description.available_fn(coordinator.vehicle)
+        if description.available_fn(coordinator)
     ]
 
     async_add_entities(numbers)
